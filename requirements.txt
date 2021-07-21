@@ -7,7 +7,7 @@ openpyxl
 matplotlib
 tqdm
 pypng
-python-opencv
+opencv-python
 sklearn
 pandas-profiling[notebook]
 
