@@ -25,7 +25,7 @@ SEED=42  # to download the same N_patients
 CLINICAL_DATA_URL='https://wiki.cancerimagingarchive.net/download/attachments/70230508/CMMD_clinicaldata_revision.xlsx?api=v2'
 
 @click.command()
-@click.argument('collection_reference_fp', type=click.Path(exists=True))
+@click.argument('collection_reference_fp', )  #type=click.Path(exists=False))
 @click.argument('output_dir', type=click.Path(exists=False))
 @click.option('N_PATIENTS', '-n', default=0, show_default=True, type=click.IntRange(min=0, max=1775, clamp=True))
 def main(collection_reference_fp, output_dir, N_PATIENTS):
@@ -124,82 +124,6 @@ def main(collection_reference_fp, output_dir, N_PATIENTS):
     #     cv2.imwrite(mask_fp, mask * 255)
     #     cv2.imwrite(bbox_fp, bb_img)
 
-def get_series_uids(series_fp, collection = 'CMMD'):
-    """ Obtain series details from TCIA and save to csv.  
-        SeriesInstanceUID attribute is needed to download collection images
-        
-        return pd.DataFrame about series details
-    """
-    if not os.path.exists(series_fp):
-        df = fetch_series_instance(collection)
-        df.to_csv(series_fp, index=False)
-    return pd.read_csv(series_fp)
-
-def fetch_series_instance(collection):
-    """Query TCIA for series data
-    """
-    try:
-        response = tcia_client.get_series(collection = collection, outputFormat='json')
-        response = json.loads(response.read().decode(response.info().get_content_charset('utf8')))
-    except urllib.error.HTTPError as err:
-        print ("Error executing " + tcia_client.GET_SERIES + ":\nError Code: ", str(err.code) , "\nMessage: " , err.read())
-    return pd.DataFrame.from_dict(response)
-
-def download_collection(series_uids, output_basedir, remove_zip=True):
-    """ download (if necessary) series images from TCIA
-    return dataframe of collected files for each series id
-         dictionary {series_uid: [downloaded_files]} 
-        mapping series_uid to downloaded images filepaths {'uid': ['1.dcm', '2.dcm', 'unexpected.foo']}
-    """
-    series_to_fps = defaultdict(list)
-    for series_uid in tqdm(series_uids):
-        series_dir = get_series(series_uid, dest_basedir=output_basedir, remove_zip=remove_zip)
-        series_to_fps[series_uid] = glob(os.path.join(series_dir, '*'))  # list downloaded `everything` (ie .dcm)
-    
-    collection_ref_df = pd.DataFrame.from_dict(series_to_fps, orient='index')
-    collection_ref_df.index.name = series_uids.name
-    collection_ref_df = pd.DataFrame(collection_ref_df.unstack().dropna().sort_values(), columns = ['filepath'])
-    collection_ref_df.index = collection_ref_df.index.droplevel(0)  # files order is not relevant
-
-    return collection_ref_df
-
-def get_series(seriesuid, dest_basedir, remove_zip=True):
-    # arbitrary choice to put downloaded series images inside 
-    # a folder named after sereis uid
-    # if know a-priori dicom filenames are all unique in the collection
-    # adding this subdirectory could be avoided  
-    series_destdir = os.path.join(dest_basedir, seriesuid)
-    # check if folder exists and is not empty, assumes unzipping won't fail!
-    if os.path.exists(series_destdir) and os.path.isdir(series_destdir) and os.listdir(series_destdir):
-        return series_destdir
-
-    zip_fn = f'{seriesuid}.zip'
-    zip_fp = os.path.join(dest_basedir, zip_fn)
-
-    # if an archive is already there, use it
-    if not os.path.exists(zip_fp):
-        # This check assumes archive file names are unique (i.e. different) in the collection 
-        # otherwise will always extract same archive
-        tcia_client.get_image(seriesuid, dest_basedir, zip_fn)
-    else: 
-        # if something breaks during download archive will be corrupted
-        # so that next time the program is run it will break when resuming from last patient 
-        try:
-            zipfile.ZipFile(zip_fp)
-        except (IOError, zipfile.BadZipfile) as e:
-            # remove archive and retry download
-            print('Bad zip file given as input.  (%s) %s' % (zip_fp, e))
-            # TODO: check if get_image endpoint can resume download from partial archives
-            os.remove(zip_fp)
-            tcia_client.get_image(seriesuid, dest_basedir, zip_fn)
-
-    with zipfile.ZipFile(zip_fp, 'r') as zp:
-        zp.extractall(series_destdir)
-    if remove_zip:
-        os.remove(zip_fp)
-
-    return series_destdir
-
 def map_preprocessing(filepaths, input_dir, output_root_dir):
     map_fn = dict()
     for fp in filepaths:
@@ -239,7 +163,6 @@ def preprocess_collection(maps, overwrite=False):
     """ turns mammografies into preprocessed pngs ready for segmentation
         returns dataframe of mapping orig->preprocessed.png
     """
-    images_metadata = dict()
     for input_fp, output_png in tqdm(maps.items()):
         if not overwrite and os.path.exists(output_png):
             continue
@@ -248,12 +171,12 @@ def preprocess_collection(maps, overwrite=False):
             mamm = dicom.pixel_array
         else:
             mamm = cv2.imread(input_fp, cv2.IMREAD_UNCHANGED)
-        mamm = preprocess_mamm(mamm)
+        mamm = preprocess_mamm(mamm, outline_erosion_diam=150)
         cv2.imwrite(output_png, mamm)
         # images_metadata[input_fp] = metadata_
     return
     
-def preprocess_mamm(mamm, outline_erosion_radius=200, artifact_lower_t=0.8, artifact_left_w=0.1, artifact_min_area=2000):
+def preprocess_mamm(mamm, outline_erosion_diam=200, artifact_lower_t=0.8, artifact_left_w=0.1, artifact_min_area=2000):
     # put it on the left
     mamm = left_mamm(mamm)
     mamm = clean_mamm(mamm)
@@ -261,7 +184,7 @@ def preprocess_mamm(mamm, outline_erosion_radius=200, artifact_lower_t=0.8, arti
     act_w = get_act_width(mamm)
     mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=0)
     # erode to remove breast outline
-    mamm = remove_outline(mamm, erosion_diam=outline_erosion_radius)
+    mamm = remove_outline(mamm, erosion_diam=outline_erosion_diam)
     # cut again
     act_w = get_act_width(mamm)
     mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=0)
@@ -320,7 +243,7 @@ def clean_mamm(mamm):
 def remove_outline(mamm, erosion_diam=200):
     """
     "We apply morphological erosion to a structure element radius of
-    `erosion_size`/2 pixels to remove the pixels close to the breast outline."
+    `erosion_diam`/2 --> 100 pixels to remove the pixels close to the breast outline."
     """
     erosion_struct = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(erosion_diam, erosion_diam))
     eroded_img = cv2.erode(mamm, erosion_struct)
