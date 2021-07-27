@@ -2,16 +2,17 @@
 -e .
 
 pandas
-pydicom
 openpyxl
-matplotlib
-tqdm
+pydicom
 pypng
 opencv-python
-sklearn
-pandas-profiling[notebook]
+matplotlib
+tqdm
+# sklearn
+# pandas-profiling[notebook]
 pylibjpeg
 pylibjpeg-libjpeg
+
 # external requirements
 click
 Sphinx

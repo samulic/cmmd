@@ -1,24 +1,18 @@
 # -*- coding: utf-8 -*-
-import collections
-from genericpath import exists
 import click
 import logging
 from pathlib import Path
-from dotenv import find_dotenv, load_dotenv
 import os
-from src.data.tcia import TCIAClient
-from src.data.utils import identify_bbox, get_png_filename, dicom_to_png
+from dotenv import find_dotenv, load_dotenv
 import json
 import pandas as pd
 import numpy as np
-import cv2
-import pydicom
 import urllib
 import zipfile
 from tqdm import tqdm
 from glob import glob
 from collections import defaultdict
-
+from src.data.tcia import TCIAClient
 
 
 # N_PATIENTS=00  # if zero download all patients

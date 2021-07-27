@@ -1,23 +1,13 @@
 # -*- coding: utf-8 -*-
-import collections
-from genericpath import exists
 import click
 import logging
 from pathlib import Path
-from dotenv import find_dotenv, load_dotenv
 import os
-from src.data.tcia import TCIAClient
-from src.data.utils import identify_bbox, get_png_filename, dicom_to_png
-import json
 import pandas as pd
 import numpy as np
 import cv2
 import pydicom
-import urllib
-import zipfile
 from tqdm import tqdm
-from glob import glob
-from collections import defaultdict
 
 
 # N_PATIENTS=00  # if zero download all patients
@@ -33,10 +23,16 @@ def main(collection_reference_fp, output_dir, N_PATIENTS):
         cleaned data ready to be analyzed (saved in ../processed).
     """
     logger = logging.getLogger(__name__)
+    if not os.path.exists(collection_reference_fp):
+        logger.error(f'input file {collection_reference_fp} not found')
+        return
     # collection_reference_fp is located in the input_data_dir
     # this info is needed to be agnostic to the folder structure
     input_dir = os.path.sep.join(collection_reference_fp.split(os.path.sep)[:-1])
     preprocessed_reference_fp = os.path.join(output_dir, collection_reference_fp.split(os.path.sep)[-1])
+    if os.path.exists(preprocessed_reference_fp):
+        logger.info(f'output file {preprocessed_reference_fp} already exists, skipping preprocessing')
+        return preprocessed_reference_fp
 
     collection_ref_df = pd.read_csv(collection_reference_fp)
     logger.info(f'found {len(collection_ref_df)} file paths from {collection_reference_fp}')
@@ -55,7 +51,7 @@ def main(collection_reference_fp, output_dir, N_PATIENTS):
     logger.info(f'preparing folders for prepocessing')
     preprocessed_ref_df = map_preprocessing(collection_ref_df['filepath'], input_dir, output_dir)
     logger.info(f'preprocessing images, saving to {output_dir}')
-    logger.info(f'preserving original input folder structure as in {input_dir}')
+    logger.info(f'preserving original input folder structure (e.g. {os.path.join(collection_ref_df["filepath"].values[0].split(os.path.sep)[:-1]).replace(input_dir, "")}')
     preprocess_collection(preprocessed_ref_df, overwrite=False)
     logger.info(f'saving preprocessed filepath references to {preprocessed_reference_fp}')
     preprocessed_ref_df.to_csv(preprocessed_reference_fp)
@@ -64,67 +60,15 @@ def main(collection_reference_fp, output_dir, N_PATIENTS):
     # logger.info(f'clinical data has {labels_df.shape} rows,columns with {labels_df.groupby(["ID1"]).size().shape[0]} patients')
 
     # # CSV of dicom attributes extracted from collection
-    dicom_attributes_fn = 'dicom_attributes.csv' if not N_PATIENTS else f'dicom_attributes-{N_PATIENTS}_seed-{SEED}.csv'
-    dicom_attributes_fp = os.path.join(project_dir, 'data', 'raw', dicom_attributes_fn)
-
-    # labels_df = pd.read_excel(CLINICAL_DATA_URL, keep_default_na=False)
-    # logger.info(f'clinical data has {labels_df.shape} rows,columns with {labels_df.groupby(["ID1"]).size().shape[0]} patients')
-
-    # # List all available dicoms
-    # all_dicom_fps = glob(os.path.join(collection_dir, '*/*.dcm'))
-    # # Filter by patient id (folder name equals series instance id)
-    # dicom_fps = [fp for fp in all_dicom_fps if fp.split(os.path.sep)[-2] in series_df['SeriesInstanceUID'].values]
-    # logger.info(f'found {len(all_dicom_fps)} dicoms, using {len(dicom_fps)}')
-
-    # if not os.path.exists(dicom_attributes_fp):
-    #     raw_attributes_fn = dicom_attributes_fn.replace('.csv', '_raw.csv')
-    #     raw_attributes_fp = os.path.join(project_dir, 'data', 'interim', raw_attributes_fn)
-    #     logger.info('extracting and saving to csv dicom attributes')
-    #     # raw_dicom_df = get_dicom_attributes(dicom_fps)
-    #     df = dicoms_to_df(dicom_fps)
-    #     if clean_dicom_metadata:
-    #         logger.info('extracting dicom attributes and saving to df\tcleaning dates and removing zero variance cols :)')
-    #         df, meta = preprocess_dicom_attributes_df(df)
-    #         logger.debug(meta)
-    #     df.to_csv(dicom_attributes_fp, index=False)
-    # dicom_attributes = pd.read_csv(dicom_attributes_fp, keep_default_na='')
-
-    # # Merge labels with dicom attrs
-    # df = pd.merge(labels_df, dicom_attributes, left_on=['ID1', 'LeftRight'], right_on=['PatientName', 'ImageLaterality'])
-    # logger.info(f'only {df.shape[0]} out of {dicom_attributes.shape[0]} images have a label assigned')
-    # df_fp = os.path.join(output_dir, 'collection_details.csv')
-    # logger.info(f'writing merged labels+attributes to {df_fp}')
-    # df.to_csv(df_fp, index=False)
-
-    # # Convert DICOM to PNG
-    # dest_dir = os.path.join(project_dir, 'data', 'interim', 'collection')
-    # if not os.path.exists(dest_dir):
-    #     os.makedirs(dest_dir)
-    # logger.info(f'converting {df.shape[0]} dicom images to png in folder {dest_dir}')
-    # for idx, row in tqdm(df.iterrows()):
-    #     fp = row['filepath']
-    #     png_fn = get_png_filename(row)
-    #     png_fp = os.path.join(dest_dir, png_fn)
-
-    #     dicom_to_png(fp, png_fp, overwrite=False)
+    # dicom_attributes_fn = 'dicom_attributes.csv' if not N_PATIENTS else f'dicom_attributes-{N_PATIENTS}_seed-{SEED}.csv'
+    # dicom_attributes_fp = os.path.join(project_dir, 'data', 'raw', dicom_attributes_fn)
 
     return
 
-    # logger.info(f'identifying bounding boxes with erosion + tophat + otsu + dilatation + max. area')
-    # for _, row in tqdm(df.iterrows()):
-    #     dcm_fp = row['filepath']
-    #     fname = get_png_filename(row)
-    #     bbox_fp = os.path.join(bboxes_dir, fname)
-    #     mask_fp = os.path.join(masks_dir, fname)
-    #     mask, bb_img = get_boundingbox(dcm_fp)
-    #     if bb_img is None:
-    #         logger.warning(f'failed to compute bounding box for ', dcm_fp)
-    #         continue
-    #     # Write to file
-    #     cv2.imwrite(mask_fp, mask * 255)
-    #     cv2.imwrite(bbox_fp, bb_img)
-
 def map_preprocessing(filepaths, input_dir, output_root_dir):
+    """ create destination directory structure where will save PNG files 
+    return pd.DataFrame with index `original_fp` and columns `preprocessed_fp`
+    """
     map_fn = dict()
     for fp in filepaths:
         # replace input extension with PNG
@@ -301,58 +245,58 @@ def remove_border_artifacts(mamm, th=0.7, w=0.1, min_area=1000):
 
 
 
-def get_boundingbox(dcm_fp, erosion_size=None, tophat_size=None, dilatation_size=None):
-    erosion_size = erosion_size or (200,200)
-    tophat_size = tophat_size or (200,16)
-    dilatation_size = dilatation_size or (120,120)
+# def get_boundingbox(dcm_fp, erosion_size=None, tophat_size=None, dilatation_size=None):
+#     erosion_size = erosion_size or (200,200)
+#     tophat_size = tophat_size or (200,16)
+#     dilatation_size = dilatation_size or (120,120)
 
-    image = pydicom.dcmread(dcm_fp).pixel_array.astype(np.uint8)    
-    mask = np.zeros(image.shape, dtype=bool)
-    bb = None
+#     image = pydicom.dcmread(dcm_fp).pixel_array.astype(np.uint8)    
+#     mask = np.zeros(image.shape, dtype=bool)
+#     bb = None
 
-    roi = identify_bbox(image, erosion_size, tophat_size, dilatation_size)
-    if roi is not None:
-        mask[roi[2]:roi[3], roi[0]:roi[1]] = 1
-        bb = image[roi[2]:roi[3], roi[0]:roi[1]]
-        # cv2.imwrite(mask_fp, mask * 255)
-        # cv2.imwrite(bbox_fp, bb)
-    return mask, bb
-
-
+#     roi = identify_bbox(image, erosion_size, tophat_size, dilatation_size)
+#     if roi is not None:
+#         mask[roi[2]:roi[3], roi[0]:roi[1]] = 1
+#         bb = image[roi[2]:roi[3], roi[0]:roi[1]]
+#         # cv2.imwrite(mask_fp, mask * 255)
+#         # cv2.imwrite(bbox_fp, bb)
+#     return mask, bb
 
 
-def get_dicom_attributes_df(fps):
-    attrs = dict()
-    for dicom_fp in tqdm(fps):
-        attrs[dicom_fp] = get_dicom_attributes(dicom_fp)
-    df = pd.DataFrame(attrs).T
-    df.index.name = 'filepath'
-    return df
-def get_dicom_attributes(fp):
-    r = dict()
-    dcm = pydicom.dcmread(fp, stop_before_pixels=True)
-    for attr in dir(dcm):
-        if not attr[0].isupper():
-            continue
-        v = dcm.get(attr)
-        if isinstance(v, str):
-            try:
-                v = int(v)
-            except ValueError as e1:
-                try:
-                    v = float(v)
-                except ValueError as e:
-                    pass
-        r[attr] = v
-    return r
 
-def preprocess_raw_dicom_attributes(df):
-    df['AcquisitionDate'] = pd.to_datetime(df['AcquisitionDate'], format='%Y%m%d')
-    df['ContentDate'] = pd.to_datetime(df['ContentDate'], format='%Y%m%d')
-    df['SeriesDate'] = pd.to_datetime(df['SeriesDate'], format='%Y%m%d')
-    df['StudyDate'] = pd.to_datetime(df['StudyDate'], format='%Y%m%d')
-    df['PatientAge'] = df['PatientAge'].str.strip('Y').astype(int)
-    return df
+
+# def get_dicom_attributes_df(fps):
+#     attrs = dict()
+#     for dicom_fp in tqdm(fps):
+#         attrs[dicom_fp] = get_dicom_attributes(dicom_fp)
+#     df = pd.DataFrame(attrs).T
+#     df.index.name = 'filepath'
+#     return df
+# def get_dicom_attributes(fp):
+#     r = dict()
+#     dcm = pydicom.dcmread(fp, stop_before_pixels=True)
+#     for attr in dir(dcm):
+#         if not attr[0].isupper():
+#             continue
+#         v = dcm.get(attr)
+#         if isinstance(v, str):
+#             try:
+#                 v = int(v)
+#             except ValueError as e1:
+#                 try:
+#                     v = float(v)
+#                 except ValueError as e:
+#                     pass
+#         r[attr] = v
+#     return r
+
+# def preprocess_raw_dicom_attributes(df):
+#     df['AcquisitionDate'] = pd.to_datetime(df['AcquisitionDate'], format='%Y%m%d')
+#     df['ContentDate'] = pd.to_datetime(df['ContentDate'], format='%Y%m%d')
+#     df['SeriesDate'] = pd.to_datetime(df['SeriesDate'], format='%Y%m%d')
+#     df['StudyDate'] = pd.to_datetime(df['StudyDate'], format='%Y%m%d')
+#     df['PatientAge'] = df['PatientAge'].str.strip('Y').astype(int)
+#     return df
 
 if __name__ == '__main__':
     log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
