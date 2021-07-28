@@ -108,31 +108,63 @@ def parse_dicom_attributes(dcm: pydicom.dataset.FileDataset):
         r[attr] = v
     return r
 
+# def preprocess_for_segmentation(maps, overwrite=False):
+#     outline_erosion_diam_mm=10
+#     for input_fp, output_png in tqdm(maps.items()):
+#         if not overwrite and os.path.exists(output_png):
+#             continue
+
+#         dicom = pydicom.dcmread(input_fp)
+#         pixel_spacing, ps_y = dicom.ImagerPixelSpacing
+#         outline_erosion_diam = round(outline_erosion_diam_mm/pixel_spacing)
+
+#         mamm = dicom.pixel_array
+#         mamm = preprocess_mamm(mamm, outline_erosion_diam)
+#         cv2.imwrite(output_png, mamm)
+    
+#     return
+
+
+def preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm=10, overwrite=False):
+    if not overwrite and os.path.exists(output_png):
+        return cv2.imread(output_png, cv2.IMREAD_UNCHANGED)
+
+    dicom = pydicom.dcmread(input_fp)
+    pixel_spacing, ps_y = dicom.ImagerPixelSpacing
+    outline_erosion_diam = round(outline_erosion_diam_mm/pixel_spacing)
+
+    mamm = dicom.pixel_array
+    mamm = preprocess_mamm(mamm, outline_erosion_diam)
+    cv2.imwrite(output_png, mamm)
+    
+    return cv2.imread(output_png, cv2.IMREAD_UNCHANGED)
+
+
 def segment_collection(maps, overwrite=False):
     """ turns mammografies into preprocessed pngs ready for segmentation
         returns dataframe of mapping orig->preprocessed.png
     """
-    outline_erosion_diam_mm = 20
-    calcification_min_diam_mm = 2
+    rerun_preprocessing = False
+    outline_erosion_diam_mm = 10
+    calcification_min_diam_mm = 0.2
+
     th = 0.5  # probability threshold
     model = get_model(tag='calc_detect')
 
     for input_fp, output_png in tqdm(maps.items()):
         raw_pred_fp = output_png.replace('.png', '__mask_raw.png')
         segmented_mask_fp = output_png.replace('.png', '__mask.png')
-        if not overwrite and os.path.exists(output_png):
-            continue
-
-        dicom = pydicom.dcmread(input_fp)
-        pixel_spacing, ps_y = dicom.ImagerPixelSpacing
-        outline_erosion_diam = round(outline_erosion_diam_mm/pixel_spacing)
+        pixel_spacing, ps_y = pydicom.dcmread(input_fp, stop_before_pixels=True).ImagerPixelSpacing
         calcification_min_diam = round(calcification_min_diam_mm/pixel_spacing)
 
-        mamm = dicom.pixel_array
-        mamm = preprocess_mamm(mamm, outline_erosion_diam)
+        mamm = preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm, rerun_preprocessing)
 
-        pred_prob = predict(model, mamm)
+        if not overwrite and os.path.exists(raw_pred_fp):
+            pred_prob = cv2.imread(raw_pred_fp, cv2.IMREAD_GRAYSCALE)/255
+        else:
+            pred_prob = predict(model, mamm)
         pred_mask = np.uint8(pred_prob > th)
+
         mask = discard_small_calcification(pred_mask, calcification_min_diam)
 
         cv2.imwrite(output_png, mamm)
