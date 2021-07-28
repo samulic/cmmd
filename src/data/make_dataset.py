@@ -15,7 +15,7 @@ SEED=42  # to download the same N_patients
 CLINICAL_DATA_URL='https://wiki.cancerimagingarchive.net/download/attachments/70230508/CMMD_clinicaldata_revision.xlsx?api=v2'
 
 @click.command()
-@click.argument('collection_reference_fp', )  #type=click.Path(exists=False))
+@click.argument('collection_reference_fp')  #type=click.Path(exists=False))
 @click.argument('output_dir', type=click.Path(exists=False))
 @click.option('N_PATIENTS', '-n', default=0, show_default=True, type=click.IntRange(min=0, max=1775, clamp=True))
 def main(collection_reference_fp, output_dir, N_PATIENTS):
@@ -51,7 +51,7 @@ def main(collection_reference_fp, output_dir, N_PATIENTS):
     logger.info(f'preparing folders for prepocessing')
     preprocessed_ref_df = map_preprocessing(collection_ref_df['filepath'], input_dir, output_dir)
     logger.info(f'preprocessing images, saving to {output_dir}')
-    logger.info(f'preserving original input folder structure (e.g. {os.path.join(collection_ref_df["filepath"].values[0].split(os.path.sep)[:-1]).replace(input_dir, "")}')
+    #logger.info(f'preserving original input folder structure (e.g. {os.path.join(collection_ref_df["filepath"].values[0].split(os.path.sep)[:-1]).replace(input_dir, "")}')
     preprocess_collection(preprocessed_ref_df, overwrite=False)
     logger.info(f'saving preprocessed filepath references to {preprocessed_reference_fp}')
     preprocessed_ref_df.to_csv(preprocessed_reference_fp)
