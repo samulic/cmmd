@@ -6,11 +6,8 @@ from pathlib import Path
 import os
 
 project_dir = Path(__file__).resolve().parents[2]
-current_dir = Path(__file__).resolve().parents[0]
-
-
-SHEBA_MEAN = 0.1572722182674478
-SHEBA_STD = 0.16270082671743363
+WEIGHTS_URL='https://github.com/roeez/CalcificationDetection/raw/main/C__00900.weights'
+weights_fp = os.path.join(project_dir, 'src', 'models', WEIGHTS_URL.split('/')[-1])
 
 class CBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -51,26 +48,19 @@ class NetC(nn.Module):
         x= self.block5(x)
 
         return self.pred(x)
-    
-model = NetC(tag='encoder')
-model.eval()
-model.load_state_dict(torch.load(os.path.join(current_dir, 'C__00900.weights'), map_location=next(model.parameters()).device))
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-if 'cpu' in str(device):
-    print("Computation will be very slow! to speed-up computation in the top menu: Runtime->Change runtime type->GPU")
-
-model.to(device)
 
 def predict(net, img):
     model_device = next(net.parameters()).device
     sig = nn.Sigmoid()
     toten = transforms.ToTensor()
-    norm = transforms.Normalize(mean=[SHEBA_MEAN], std=[SHEBA_STD])
     if len(img.shape) == 2:
         img = img[..., None]
-    img = np.int32(img) if img.dtype==np.uint16 else np.int16(img)
+
+    img = np.float32(img)  # if img.dtype==np.uint16 else np.float16(img)
+    MY_MEAN_ = np.mean(img.flatten())
+    MY_STD_ = np.std(img.flatten())
+
+    norm = transforms.Normalize(mean=[MY_MEAN_], std=[MY_STD_])
     img = norm(toten(img).float())[:1][None, ...].float()
     img = img.to(model_device)
     with torch.no_grad():
@@ -78,3 +68,21 @@ def predict(net, img):
     sig_pred = sig(pred)
     
     return sig_pred[0, 0].cpu().numpy()
+
+def get_model(tag='encoder', weights_path=weights_fp):
+    if not os.path.exists(weights_path):
+        # !wget {WEIGHTS_URL} -P ../src/models/
+        os.system(f'wget {WEIGHTS_URL} -P {weights_path}')
+    model = NetC(tag=tag)
+    model.eval()
+    model.load_state_dict(torch.load(weights_path, map_location=next(model.parameters()).device))
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    if 'cpu' in str(device):
+        print("Computation will be very slow! to speed-up computation in the top menu: Runtime->Change runtime type->GPU")
+
+    model.to(device)
+    print('model loaded correctly')
+    return model
+

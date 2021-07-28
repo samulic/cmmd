@@ -1,5 +1,6 @@
 notebooks/Untitled*
 reports/figures/*png
+*.weights
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
