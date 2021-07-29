@@ -141,7 +141,7 @@ def preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm=10
 
     mamm = np.uint8(mamm/max_color_orig*255)
     mamm = preprocess_mamm(mamm, outline_erosion_diam, artifact_lower_t=artifact_lower_t, artifact_min_area=artifact_min_area)
-    mamm = (mamm * (max_color_orig / 255)).astype(np.uint16 if max_color_orig > 255 else np.uint8)
+    # mamm = (mamm * (max_color_orig / 255)).astype(np.uint16 if max_color_orig > 255 else np.uint8)
 
     cv2.imwrite(output_png, mamm)
     
