@@ -191,7 +191,7 @@ def preprocess_mamm(mamm, outline_erosion_diam=100, artifact_lower_t=0.8, artifa
     act_w = get_act_width(mamm)  # identify column where background starts
     mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=0)
     # erode to remove breast outline
-    mamm = remove_outline(mamm, erosion_diam=int(outline_erosion_diam))
+    # mamm = remove_outline(mamm, erosion_diam=int(outline_erosion_diam))
     act_w = get_act_width(mamm)  # cut again
     mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=0)
 
@@ -222,11 +222,29 @@ def cut_mamm(mamm, act_w, first_n_col_to_drop=0):
 
     return mamm
 
+def clean_outline(mamm, erosion_size=100):
+    background_val = 0
+    msk = (mamm > background_val).astype(np.uint8)
+    msk = cv2.morphologyEx(msk, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_size, erosion_size))
+    # msk = cv2.morphologyEx(msk, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (50, 50)))
+    
+    comps = cv2.connectedComponentsWithStats(msk)
+    # Find largest area, discard others
+    common_label = np.argmax(comps[2][1:, cv2.CC_STAT_AREA]) + 1
+
+    msk = (comps[1] == common_label).astype(bool)
+
+    mamm[:, :] = msk * mamm[:, :]
+
+    # erosion_struct = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(erosion_diam, erosion_diam))
+    # eroded_img = cv2.erode(mamm, erosion_struct)
+    # erosion_mask = (eroded_img > 0).astype(bool)
+    # mamm[:, :] = erosion_mask * mamm[:, :]
+    
+    return mamm
+
 def clean_mamm(mamm):
     background_val = 0
-    # mamm[:10, :, ...] = 0
-    # mamm[-10:, :, ...] = 0
-    # mamm[:, -10:, ...] = 0
     # If three channels image, transform to grayscale (2d) buy only if the 3 channels
     # have the same intensity for each given pixel else turn pixel off
     if len(mamm.shape)==3:
