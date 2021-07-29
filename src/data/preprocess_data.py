@@ -57,7 +57,7 @@ def main(collection_reference_fp, output_dir, N_PATIENTS):
 
     logger.info(f'preprocessing images, saving to {output_dir}')
     #logger.info(f'preserving original input folder structure (e.g. {os.path.join(collection_ref_df["filepath"].values[0].split(os.path.sep)[:-1]).replace(input_dir, "")}')
-    segment_collection(preprocessed_ref_df, overwrite=False)
+    identify_calcifications(preprocessed_ref_df, overwrite=False)
     logger.info(f'saving preprocessed filepath references to {preprocessed_reference_fp}')
     preprocessed_ref_df.to_csv(preprocessed_reference_fp)
 
@@ -89,48 +89,47 @@ def map_preprocessing_filepaths(filepaths, input_dir, output_root_dir):
     preprocessed_ref_df = preprocessed_ref_df['preprocessed_fp']
     return preprocessed_ref_df
 
-def parse_dicom_attributes(dcm: pydicom.dataset.FileDataset):
-    r = dict()
-    for attr in dir(dcm):
-        if not attr[0].isupper():
-            continue
-        if attr == 'PixelData':
-            continue
-        v = dcm.get(attr)
-        if isinstance(v, str):
-            try:
-                v = int(v)
-            except ValueError as e1:
-                try:
-                    v = float(v)
-                except ValueError as e:
-                    pass
-        r[attr] = v
-    return r
+def identify_calcifications(maps, calcification_min_diam_mm = 0.2, suffix = '__cmask_raw', overwrite=False):
+    """ preprocess images for segmentation and discard non calcifications
+    """
+    rerun_preprocessing = False
+    outline_erosion_diam_mm = 10
+    bcg_th_for_bb_removal = 0.3
 
-# def preprocess_for_segmentation(maps, overwrite=False):
-#     outline_erosion_diam_mm=10
-#     for input_fp, output_png in tqdm(maps.items()):
-#         if not overwrite and os.path.exists(output_png):
-#             continue
+    model = get_model(tag='calc_detect')
 
-#         dicom = pydicom.dcmread(input_fp)
-#         pixel_spacing, ps_y = dicom.ImagerPixelSpacing
-#         outline_erosion_diam = round(outline_erosion_diam_mm/pixel_spacing)
+    for input_fp, output_png in tqdm(maps.items()):
+        raw_pred_fp = output_png.replace('.png', f'{suffix}.png')
+        pixel_spacing, ps_y = pydicom.dcmread(input_fp, stop_before_pixels=True).ImagerPixelSpacing
+        calcification_min_diam = round(calcification_min_diam_mm/pixel_spacing)
 
-#         mamm = dicom.pixel_array
-#         mamm = preprocess_mamm(mamm, outline_erosion_diam)
-#         cv2.imwrite(output_png, mamm)
-    
-#     return
+        mamm = preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm, rerun_preprocessing)
 
+        if os.path.exists(raw_pred_fp) and not overwrite:
+            pred_prob = cv2.imread(raw_pred_fp, cv2.IMREAD_UNCHANGED)/255
+        else:
+            pred_prob = predict(model, mamm)
+        pred_mask = np.uint8(pred_prob > 0.5)
+
+        mask = discard_non_calcifications(mamm, pred_mask, calcification_min_diam, bcg_th_for_bb_removal)
+        pred_prob[~mask] = 0
+
+        cv2.imwrite(raw_pred_fp, np.uint8(pred_prob*255))
+
+        # mask = discard_small_calcifications(pred_mask, calcification_min_diam)
+        # 
+        # mask = discard_outline_calcifications(mamm, mask, bcg_th=bcg_th_for_bb_removal)
+        # cv2.imwrite(raw_pred_fp.replace(f'{suffix}.png', f'__no_outline_calc{suffix}.png'), mask)
+
+    return
 
 def preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm=10, overwrite=False):
     if not overwrite and os.path.exists(output_png):
         return cv2.imread(output_png, cv2.IMREAD_UNCHANGED)
 
     dicom = pydicom.dcmread(input_fp)
-    pixel_spacing, ps_y = dicom.ImagerPixelSpacing
+    pixel_spacing, ps_y = map(float, dicom.ImagerPixelSpacing)
+    pixel_spacing = float(pixel_spacing)
     outline_erosion_diam = round(outline_erosion_diam_mm/pixel_spacing)
 
     mamm = dicom.pixel_array
@@ -139,65 +138,61 @@ def preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm=10
     
     return cv2.imread(output_png, cv2.IMREAD_UNCHANGED)
 
-
-def segment_collection(maps, overwrite=False):
-    """ turns mammografies into preprocessed pngs ready for segmentation
-        returns dataframe of mapping orig->preprocessed.png
+def discard_non_calcifications(image, mask, min_diam, bcg_th=.3):
+    """ 
+        - remove blobs with greatest dimension smaller than `min_diam`
+        - remove blobs where more than `bcg_th` of the corresponding 
+            bounding box pixels proportion are background.
     """
-    rerun_preprocessing = False
-    outline_erosion_diam_mm = 10
-    calcification_min_diam_mm = 0.2
-
-    th = 0.5  # probability threshold
-    model = get_model(tag='calc_detect')
-
-    for input_fp, output_png in tqdm(maps.items()):
-        raw_pred_fp = output_png.replace('.png', '__mask_raw.png')
-        segmented_mask_fp = output_png.replace('.png', '__mask.png')
-        pixel_spacing, ps_y = pydicom.dcmread(input_fp, stop_before_pixels=True).ImagerPixelSpacing
-        calcification_min_diam = round(calcification_min_diam_mm/pixel_spacing)
-
-        mamm = preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm, rerun_preprocessing)
-
-        if not overwrite and os.path.exists(raw_pred_fp):
-            pred_prob = cv2.imread(raw_pred_fp, cv2.IMREAD_GRAYSCALE)/255
-        else:
-            pred_prob = predict(model, mamm)
-        pred_mask = np.uint8(pred_prob > th)
-
-        mask = discard_small_calcification(pred_mask, calcification_min_diam)
-
-        cv2.imwrite(output_png, mamm)
-        cv2.imwrite(raw_pred_fp, (pred_prob*255).astype(np.uint8))
-        cv2.imwrite(segmented_mask_fp, (mask*255).astype(np.uint8))
-    return
-
-def discard_small_calcification(mask, min_diam):
-    """ remove blobs with greatest dimension smaller than `min_diam`
-    """
-    clean_mask = np.zeros(mask.shape)
+    clean_mask = np.zeros(mask.shape, dtype=bool)
     n_cc, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
     for candidate_id, stat in enumerate(stats[1:], start=1):
-        # exclude background component
-        # if (stat[:4] == [0, 0, mask.shape[1], mask.shape[0]]).all():
-        #     continue
         w, h = stat[2:4]
-        if max(w, h) < min_diam:
+        if is_small_calcification(w, h, min_diam):
             continue
+        # if is_blob_near_outline(image, stat, bcg_th):
+        #     continue
         clean_mask = np.logical_or(clean_mask, labels==candidate_id)
     return clean_mask
 
-def preprocess_mamm(mamm, outline_erosion_diam=200, artifact_lower_t=0.8, artifact_left_w=0.1, artifact_min_area=2000):
-    # put it on the left
+def is_small_calcification(bb_width, bb_height, min_diam):
+    """ remove blobs with greatest dimension smaller than `min_diam`
+    """
+    if max(bb_width, bb_height) < min_diam:
+        return True
+    return False
+
+def is_blob_near_outline(image, bb, bcg_th=0.3):
+    """ remove blobs where more than `bcg_th` of the corresponding 
+    bounding box pixels proportion are background.
+    TODO: remove blobs that has more than `th` pixels nearby the background
+    """
+    w, h = bb[2], bb[3]
+    x1, x2, y1, y2 = bb[0], bb[0]+w, bb[1], bb[1]+h
+    bb_area = w * h
+    background_area = bb_area - np.count_nonzero(image[x1:x2, y1:y2])
+    if background_area >= bb_area * bcg_th:
+        return True
+    return False
+
+def get_centroids_mask(mask):
+    centroids_mask = np.zeros(mask.shape)
+    n_cc, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
+    for stat in stats[1:]:
+        mean_y = round(stat[0] + stat[2]/2)
+        mean_x = round(stat[1] + stat[3]/2)
+        centroids_mask[mean_x, mean_y] = 1
+
+    return centroids_mask
+
+def preprocess_mamm(mamm, outline_erosion_diam=100, artifact_lower_t=0.8, artifact_left_w=0.1, artifact_min_area=2000):
     mamm = left_mamm(mamm)
     mamm = clean_mamm(mamm)
-    # identify column where background starts
-    act_w = get_act_width(mamm)
+    act_w = get_act_width(mamm)  # identify column where background starts
     mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=0)
     # erode to remove breast outline
     mamm = remove_outline(mamm, erosion_diam=int(outline_erosion_diam))
-    # cut again
-    act_w = get_act_width(mamm)
+    act_w = get_act_width(mamm)  # cut again
     mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=0)
 
     mamm = remove_border_artifacts(mamm, artifact_lower_t, artifact_left_w, artifact_min_area)
@@ -251,7 +246,7 @@ def clean_mamm(mamm):
 
     return mamm
 
-def remove_outline(mamm, erosion_diam=200):
+def remove_outline(mamm, erosion_diam=100):
     """
     "We apply morphological erosion to a structure element radius of
     `erosion_diam`/2 --> 100 pixels to remove the pixels close to the breast outline."
@@ -275,10 +270,7 @@ def remove_border_artifacts(mamm, th=0.7, w=0.1, min_area=1000):
 
     artifact_mask = cv2.threshold(mamm[:, :w, ...], th, max_color, cv2.THRESH_BINARY)[1]
     artifact_mask = artifact_mask.astype(np.uint8)
-    # print(artifact_mask.shape, artifact_mask.dtype)
 
-    # mask = np.zeros(mamm.shape).astype(bool)
-    # mask[:, :w] = artifact_mask
     # first (quick??) check, total selected area is small
     if np.sum(artifact_mask) < min_area:
         return mamm
@@ -310,40 +302,49 @@ def remove_border_artifacts(mamm, th=0.7, w=0.1, min_area=1000):
     return mamm
 
 
+# def segment_collection(maps, overwrite=False):
+#     """ turns mammografies into preprocessed pngs ready for segmentation
+#         returns dataframe of mapping orig->preprocessed.png
+#     """
+#     rerun_preprocessing = False
+#     outline_erosion_diam_mm = 10
+#     calcification_min_diam_mm = 0.2
+    
+
+#     th = 0.5  # probability threshold
+#     model = get_model(tag='calc_detect')
+
+#     for input_fp, output_png in tqdm(maps.items()):
+#         raw_pred_fp = output_png.replace('.png', '__mask_raw.png')
+#         segmented_mask_fp = output_png.replace('.png', '__mask.png')
+#         pixel_spacing, ps_y = pydicom.dcmread(input_fp, stop_before_pixels=True).ImagerPixelSpacing
+#         calcification_min_diam = round(calcification_min_diam_mm/pixel_spacing)
+
+#         mamm = preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm, rerun_preprocessing)
+
+#         if not overwrite and os.path.exists(raw_pred_fp):
+#             pred_prob = cv2.imread(raw_pred_fp, cv2.IMREAD_GRAYSCALE)/255
+#         else:
+#             pred_prob = predict(model, mamm)
+#         pred_mask = np.uint8(pred_prob > th)
+
+#         mask = discard_non_calcifications(mamm, pred_mask, calcification_min_diam, )
+
+#         centroids_mask = get_centroids_mask(mask)
 
 
-# def get_boundingbox(dcm_fp, erosion_size=None, tophat_size=None, dilatation_size=None):
-#     erosion_size = erosion_size or (200,200)
-#     tophat_size = tophat_size or (200,16)
-#     dilatation_size = dilatation_size or (120,120)
 
-#     image = pydicom.dcmread(dcm_fp).pixel_array.astype(np.uint8)    
-#     mask = np.zeros(image.shape, dtype=bool)
-#     bb = None
+#         cv2.imwrite(output_png, mamm)
+#         cv2.imwrite(raw_pred_fp, np.uint8(pred_prob*(2**8)))
+#         # cv2.imwrite(segmented_mask_fp, np.uint8(mask*(2**8)))
+#     return
 
-#     roi = identify_bbox(image, erosion_size, tophat_size, dilatation_size)
-#     if roi is not None:
-#         mask[roi[2]:roi[3], roi[0]:roi[1]] = 1
-#         bb = image[roi[2]:roi[3], roi[0]:roi[1]]
-#         # cv2.imwrite(mask_fp, mask * 255)
-#         # cv2.imwrite(bbox_fp, bb)
-#     return mask, bb
-
-
-
-
-# def get_dicom_attributes_df(fps):
-#     attrs = dict()
-#     for dicom_fp in tqdm(fps):
-#         attrs[dicom_fp] = get_dicom_attributes(dicom_fp)
-#     df = pd.DataFrame(attrs).T
-#     df.index.name = 'filepath'
-#     return df
-# def get_dicom_attributes(fp):
+# def parse_dicom_attributes(dcm: pydicom.dataset.FileDataset):
 #     r = dict()
-#     dcm = pydicom.dcmread(fp, stop_before_pixels=True)
 #     for attr in dir(dcm):
 #         if not attr[0].isupper():
+#             continue
+#         if attr == 'PixelData':
 #             continue
 #         v = dcm.get(attr)
 #         if isinstance(v, str):
@@ -357,13 +358,6 @@ def remove_border_artifacts(mamm, th=0.7, w=0.1, min_area=1000):
 #         r[attr] = v
 #     return r
 
-# def preprocess_raw_dicom_attributes(df):
-#     df['AcquisitionDate'] = pd.to_datetime(df['AcquisitionDate'], format='%Y%m%d')
-#     df['ContentDate'] = pd.to_datetime(df['ContentDate'], format='%Y%m%d')
-#     df['SeriesDate'] = pd.to_datetime(df['SeriesDate'], format='%Y%m%d')
-#     df['StudyDate'] = pd.to_datetime(df['StudyDate'], format='%Y%m%d')
-#     df['PatientAge'] = df['PatientAge'].str.strip('Y').astype(int)
-#     return df
 
 if __name__ == '__main__':
     log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
