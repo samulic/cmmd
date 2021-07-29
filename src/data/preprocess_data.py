@@ -57,7 +57,7 @@ def main(collection_reference_fp, output_dir, N_PATIENTS):
 
     logger.info(f'preprocessing images, saving to {output_dir}')
     #logger.info(f'preserving original input folder structure (e.g. {os.path.join(collection_ref_df["filepath"].values[0].split(os.path.sep)[:-1]).replace(input_dir, "")}')
-    identify_calcifications(preprocessed_ref_df, overwrite=False)
+    identify_calcifications(preprocessed_ref_df, prediction_mask_suffix='__pred_raw', overwrite=False)
     logger.info(f'saving preprocessed filepath references to {preprocessed_reference_fp}')
     preprocessed_ref_df.to_csv(preprocessed_reference_fp)
 
@@ -111,7 +111,7 @@ def identify_calcifications(maps, min_diam_mm = 0.2, prediction_mask_suffix = '_
             pred_prob = predict(model, mamm)
         pred_mask = np.uint8(pred_prob > 0.3)
 
-        mask = identify_non_calcifications(pred_mask, calcification_min_diam)
+        mask = discard_non_calcifications(pred_mask, calcification_min_diam)
         pred_prob[~mask] = 0
 
         cv2.imwrite(raw_pred_fp, np.uint8(pred_prob*255))
@@ -143,7 +143,7 @@ def preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm=10
     
     return cv2.imread(output_png, cv2.IMREAD_UNCHANGED)
 
-def identify_non_calcifications(mask, min_diam):
+def discard_non_calcifications(mask, min_diam):
     """ 
         - remove blobs with greatest dimension smaller than `min_diam`
     """
