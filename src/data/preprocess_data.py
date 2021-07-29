@@ -134,7 +134,7 @@ def preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm=10
     mamm = preprocess_mamm(mamm, outline_erosion_diam, artifact_lower_t=artifact_lower_t, artifact_min_area=artifact_min_area)
     # mamm = (mamm * (max_color_orig / 255)).astype(np.uint16 if max_color_orig > 255 else np.uint8)
 
-    cv2.imwrite(output_png, mamm)
+    cv2.imwrite(output_png, (mamm/255*max_color_orig).astype(np.uint8 if max_color_orig < 256 else np.uint8))
     
     return cv2.imread(output_png, cv2.IMREAD_UNCHANGED)
 
@@ -226,7 +226,7 @@ def remove_outline(mamm, erosion_diam=100):
     erosion_struct = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(erosion_diam, erosion_diam))
     eroded_img = cv2.erode(mamm, erosion_struct)
 
-    erosion_mask = (eroded_img > 0).astype(np.uint8)
+    erosion_mask = ((eroded_img > 0)*255).astype(np.uint8)
     # msk = cv2.morphologyEx(msk, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_size, erosion_size)))
     msk = cv2.morphologyEx(erosion_mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (erosion_diam, erosion_diam)))
     comps = cv2.connectedComponentsWithStats(msk)
