@@ -89,7 +89,7 @@ def map_preprocessing_filepaths(filepaths, input_dir, output_root_dir):
     preprocessed_ref_df = preprocessed_ref_df['preprocessed_fp']
     return preprocessed_ref_df
 
-def identify_calcifications(maps, calcification_min_diam_mm = 0.2, suffix = '__cmask_raw', overwrite=False):
+def identify_calcifications(maps, min_diam_mm = 0.2, prediction_mask_suffix = '__cmask_raw', overwrite=False):
     """ preprocess images for segmentation and discard non calcifications
     """
     rerun_preprocessing = False
@@ -99,19 +99,19 @@ def identify_calcifications(maps, calcification_min_diam_mm = 0.2, suffix = '__c
     model = get_model(tag='calc_detect')
 
     for input_fp, output_png in tqdm(maps.items()):
-        raw_pred_fp = output_png.replace('.png', f'{suffix}.png')
+        raw_pred_fp = output_png.replace('.png', f'{prediction_mask_suffix}.png')
         pixel_spacing, ps_y = pydicom.dcmread(input_fp, stop_before_pixels=True).ImagerPixelSpacing
-        calcification_min_diam = round(calcification_min_diam_mm/pixel_spacing)
+        calcification_min_diam = round(min_diam_mm/pixel_spacing)
 
-        mamm = preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm, rerun_preprocessing)
+        mamm = preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm, overwrite=rerun_preprocessing)
 
         if os.path.exists(raw_pred_fp) and not overwrite:
             pred_prob = cv2.imread(raw_pred_fp, cv2.IMREAD_UNCHANGED)/255
         else:
             pred_prob = predict(model, mamm)
-        pred_mask = np.uint8(pred_prob > 0.5)
+        pred_mask = np.uint8(pred_prob > 0.3)
 
-        mask = discard_non_calcifications(mamm, pred_mask, calcification_min_diam, bcg_th_for_bb_removal)
+        mask = identify_non_calcifications(pred_mask, calcification_min_diam)
         pred_prob[~mask] = 0
 
         cv2.imwrite(raw_pred_fp, np.uint8(pred_prob*255))
@@ -123,26 +123,29 @@ def identify_calcifications(maps, calcification_min_diam_mm = 0.2, suffix = '__c
 
     return
 
-def preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm=10, overwrite=False):
+def preprocess_for_segmentation(input_fp, output_png, outline_erosion_diam_mm=10, artifact_lower_t=0.8, artifact_min_area=0.001, overwrite=False):
     if not overwrite and os.path.exists(output_png):
         return cv2.imread(output_png, cv2.IMREAD_UNCHANGED)
 
     dicom = pydicom.dcmread(input_fp)
     pixel_spacing, ps_y = map(float, dicom.ImagerPixelSpacing)
     pixel_spacing = float(pixel_spacing)
-    outline_erosion_diam = round(outline_erosion_diam_mm/pixel_spacing)
-
     mamm = dicom.pixel_array
-    mamm = preprocess_mamm(mamm, outline_erosion_diam)
+    
+    outline_erosion_diam = round(outline_erosion_diam_mm/pixel_spacing)
+    max_color_orig = np.max(mamm)
+
+    mamm = np.uint8(mamm/max_color_orig*255)
+    mamm = preprocess_mamm(mamm, outline_erosion_diam, artifact_lower_t=artifact_lower_t, artifact_min_area=artifact_min_area)
+    mamm = mamm/255 * max_color_orig
+
     cv2.imwrite(output_png, mamm)
     
     return cv2.imread(output_png, cv2.IMREAD_UNCHANGED)
 
-def discard_non_calcifications(image, mask, min_diam, bcg_th=.3):
+def identify_non_calcifications(mask, min_diam):
     """ 
         - remove blobs with greatest dimension smaller than `min_diam`
-        - remove blobs where more than `bcg_th` of the corresponding 
-            bounding box pixels proportion are background.
     """
     clean_mask = np.zeros(mask.shape, dtype=bool)
     n_cc, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
@@ -150,8 +153,6 @@ def discard_non_calcifications(image, mask, min_diam, bcg_th=.3):
         w, h = stat[2:4]
         if is_small_calcification(w, h, min_diam):
             continue
-        # if is_blob_near_outline(image, stat, bcg_th):
-        #     continue
         clean_mask = np.logical_or(clean_mask, labels==candidate_id)
     return clean_mask
 
@@ -185,17 +186,17 @@ def get_centroids_mask(mask):
 
     return centroids_mask
 
-def preprocess_mamm(mamm, outline_erosion_diam=100, artifact_lower_t=0.8, artifact_left_w=0.1, artifact_min_area=2000):
-    mamm = left_mamm(mamm)
-    mamm = clean_mamm(mamm)
-    act_w = get_act_width(mamm)  # identify column where background starts
-    mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=0)
-    # erode to remove breast outline
-    # mamm = remove_outline(mamm, erosion_diam=int(outline_erosion_diam))
-    act_w = get_act_width(mamm)  # cut again
-    mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=0)
+def preprocess_mamm(mamm, outline_erosion_diam, artifact_lower_t, artifact_min_area, artifact_left_w=0.1):
+    artifact_min_area *= (mamm.shape[0] * mamm.shape[1])
+    artifact_lower_t = int( np.max(mamm) * artifact_lower_t)
+    artifact_left_w = int(mamm.shape[1] * artifact_left_w)
+    first_n_col_to_drop = 0
 
-    mamm = remove_border_artifacts(mamm, artifact_lower_t, artifact_left_w, artifact_min_area)
+    mamm = left_mamm(mamm)
+    mamm = remove_outline(mamm, outline_erosion_diam)
+    act_w = get_act_width(mamm)
+    mamm = cut_mamm(mamm, act_w, first_n_col_to_drop=first_n_col_to_drop)
+    mamm = remove_border_artifacts(mamm, artifact_lower_t, artifact_min_area, w=artifact_left_w)
 
     return mamm
 
@@ -222,48 +223,6 @@ def cut_mamm(mamm, act_w, first_n_col_to_drop=0):
 
     return mamm
 
-def clean_outline(mamm, erosion_size=100):
-    background_val = 0
-    msk = (mamm > background_val).astype(np.uint8)
-    msk = cv2.morphologyEx(msk, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_size, erosion_size))
-    # msk = cv2.morphologyEx(msk, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (50, 50)))
-    
-    comps = cv2.connectedComponentsWithStats(msk)
-    # Find largest area, discard others
-    common_label = np.argmax(comps[2][1:, cv2.CC_STAT_AREA]) + 1
-
-    msk = (comps[1] == common_label).astype(bool)
-
-    mamm[:, :] = msk * mamm[:, :]
-
-    # erosion_struct = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(erosion_diam, erosion_diam))
-    # eroded_img = cv2.erode(mamm, erosion_struct)
-    # erosion_mask = (eroded_img > 0).astype(bool)
-    # mamm[:, :] = erosion_mask * mamm[:, :]
-    
-    return mamm
-
-def clean_mamm(mamm):
-    background_val = 0
-    # If three channels image, transform to grayscale (2d) buy only if the 3 channels
-    # have the same intensity for each given pixel else turn pixel off
-    if len(mamm.shape)==3:
-        msk1 = (mamm[:, :, 0] == mamm[:, :, 1]) & (mamm[:, :, 1] == mamm[:, :, 2])
-        mamm = mamm.mean(axis=2) * msk1
-        
-    msk = (mamm > background_val).astype(np.uint8)
-    msk = cv2.morphologyEx(msk, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (50, 50)))
-
-    comps = cv2.connectedComponentsWithStats(msk)
-    # Find largest area, discard others
-    common_label = np.argmax(comps[2][1:, cv2.CC_STAT_AREA]) + 1
-
-    msk = (comps[1] == common_label).astype(bool)
-
-    mamm[:, :] = msk * mamm[:, :]
-
-    return mamm
-
 def remove_outline(mamm, erosion_diam=100):
     """
     "We apply morphological erosion to a structure element radius of
@@ -271,22 +230,29 @@ def remove_outline(mamm, erosion_diam=100):
     """
     erosion_struct = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(erosion_diam, erosion_diam))
     eroded_img = cv2.erode(mamm, erosion_struct)
-    erosion_mask = (eroded_img > 0).astype(bool)
-    mamm[:, :] = erosion_mask * mamm[:, :]
+
+    erosion_mask = (eroded_img > 0).astype(np.uint8)
+    # msk = cv2.morphologyEx(msk, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_size, erosion_size)))
+    msk = cv2.morphologyEx(erosion_mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (erosion_diam, erosion_diam)))
+    comps = cv2.connectedComponentsWithStats(msk)
+    # Find largest area, discard others
+    common_label = np.argmax(comps[2][1:, cv2.CC_STAT_AREA]) + 1
+
+    msk = (comps[1] == common_label).astype(bool)
+
+    mamm[:, :] = msk * mamm[:, :]
     
     return mamm
 
-def remove_border_artifacts(mamm, th=0.7, w=0.1, min_area=1000):
+def remove_border_artifacts(mamm, th, min_area, w):
     """ Remove bright areas near the left border within `w` proportion of image width 
     t float lower bound for color intensity (fraction between 0 and 1 from maximum image intensity)
     w is the distance from left border within which to remove bright spots greater than 
     `min_area` pixels
     """
-    max_color = np.max(mamm)
-    th = int(max_color*th)
     w = round(mamm.shape[1] * w)
 
-    artifact_mask = cv2.threshold(mamm[:, :w, ...], th, max_color, cv2.THRESH_BINARY)[1]
+    artifact_mask = cv2.threshold(mamm[:, :w, ...], th, np.max(mamm), cv2.THRESH_BINARY)[1]
     artifact_mask = artifact_mask.astype(np.uint8)
 
     # first (quick??) check, total selected area is small
@@ -296,24 +262,23 @@ def remove_border_artifacts(mamm, th=0.7, w=0.1, min_area=1000):
     comps = cv2.connectedComponentsWithStats(artifact_mask)
     mask = np.zeros(mamm[:, :w].shape).astype(bool)
     
-    for label_idx, area in enumerate(comps[2][:, cv2.CC_STAT_AREA]):
-        if area < min_area or area >= mamm.shape[0]*mamm.shape[1]:
+    for label_idx, area in enumerate(comps[2][1:, cv2.CC_STAT_AREA], start=1):
+        if area < min_area:
             continue
         m = (comps[1] == label_idx).astype(bool)
         # each single area should be greater than `min_area`
         mi = mamm[:, :w]*m
-        mis = mi>=th
-        if np.count_nonzero(mis) < min_area:
+        if np.count_nonzero(mi>=th) < min_area:
             continue
         # Should be attached to the border -> 
         # 1/50th of all pixel should be in the first two columns
         if np.sum(m[:, :2]) < np.sum(m)/50:
             continue
-        mask = np.logical_or(mask, m)#(mask + m).astype(bool)
+        mask = np.logical_or(mask, m)
     
     mask = mask.astype(np.uint8)
 
-    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(10, 10)))  # TODO
+    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(10, 10)))
     # discard from image the identified portions 
     mamm[:, :w] = (1 - mask) * mamm[:, :w]
 
