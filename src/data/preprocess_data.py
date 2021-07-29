@@ -111,8 +111,12 @@ def identify_calcifications(maps, min_diam_mm = 0.2, prediction_mask_suffix = '_
             pred_prob = predict(model, mamm)
         pred_mask = np.uint8(pred_prob > 0.3)
 
+        cv2.imwrite(raw_pred_fp, np.uint8(pred_mask*255))
+
         mask = discard_non_calcifications(pred_mask, calcification_min_diam)
         pred_prob[~mask] = 0
+        cv2.imwrite(raw_pred_fp.replace('.png', '|calc_only.png'), np.uint8(pred_mask*255))
+        
 
         cv2.imwrite(raw_pred_fp, np.uint8(pred_prob*255))
 
