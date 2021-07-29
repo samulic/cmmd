@@ -248,15 +248,13 @@ def remove_border_artifacts(mamm, th, min_area, w):
     w = round(mamm.shape[1] * w)
 
     artifact_mask = cv2.threshold(mamm[:, :w, ...], th, np.max(mamm), cv2.THRESH_BINARY)[1]
-    artifact_mask = artifact_mask.astype(np.uint8)
-
     # first (quick??) check, total selected area is small
     if np.sum(artifact_mask) < min_area:
         return mamm
+    artifact_mask = artifact_mask.astype(np.uint8)
 
-    comps = cv2.connectedComponentsWithStats(artifact_mask)
     mask = np.zeros(mamm[:, :w].shape).astype(bool)
-    
+    comps = cv2.connectedComponentsWithStats(artifact_mask)
     for label_idx, area in enumerate(comps[2][1:, cv2.CC_STAT_AREA], start=1):
         if area < min_area:
             continue
@@ -271,11 +269,11 @@ def remove_border_artifacts(mamm, th, min_area, w):
             continue
         mask = np.logical_or(mask, m)
     
-    mask = mask.astype(np.uint8)
+    mask = (mask*255).astype(np.uint8)
 
     mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(10, 10)))
     # discard from image the identified portions 
-    mamm[:, :w] = (1 - mask) * mamm[:, :w]
+    mamm[:, :w] *= ~mask
 
     return mamm
 
